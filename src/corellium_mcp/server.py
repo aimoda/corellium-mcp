@@ -36,10 +36,10 @@ def create_server() -> FastMCP:
         try:
             async with corellium_api.ApiClient(configuration) as api_client:
                 api = corellium_api.CorelliumApi(api_client)
-                instances = await api.v1_get_instances()
+                instances = await api.v1_get_instances()  # type: ignore[misc]
 
                 devices = []
-                for instance in instances:
+                for instance in instances:  # type: ignore[misc]
                     state_value = None
                     if hasattr(instance, 'state') and instance.state and hasattr(instance.state, 'state'):
                         state_value = instance.state.state

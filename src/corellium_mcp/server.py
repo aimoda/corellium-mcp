@@ -2,6 +2,7 @@ import os
 from typing import Annotated
 from pydantic import Field
 from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 import corellium_api
 
 
@@ -63,6 +64,30 @@ def create_server() -> FastMCP:
                 return {"devices": devices, "count": len(devices)}
         except Exception as e:
             return {"error": str(e), "devices": [], "count": 0}
+
+    @mcp.tool
+    async def take_device_screenshot(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device to screenshot")],
+        format: Annotated[str, Field(description="Image format: 'png' or 'jpeg'")] = "png",
+        scale: Annotated[float, Field(description="Screenshot scale 1:N")] = 1.0
+    ) -> Image:
+        """
+        Take a screenshot of a Corellium device and return it as an image.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            # API returns a file path to a temporary file
+            screenshot_path = await api.v1_get_instance_screenshot(instance_id, format, scale=scale)  # type: ignore[misc]
+
+            # Ensure we have a valid file path string
+            if not isinstance(screenshot_path, str):
+                raise ValueError(f"Expected file path string, got {type(screenshot_path)}")
+
+            # Read the image data from the temporary file
+            with open(screenshot_path, 'rb') as f:
+                image_bytes = f.read()
+
+            return Image(data=image_bytes, format=format)
 
     return mcp
 

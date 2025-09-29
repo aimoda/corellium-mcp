@@ -1,2 +1,3 @@
 fastmcp>=2.12.4
+corellium-api>=0.4.1
 

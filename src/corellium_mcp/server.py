@@ -69,6 +69,11 @@ def create_server() -> FastMCP:
     )
     configuration.access_token = corellium_api_token
 
+    # Disable client-side validation globally to work around API validation bugs
+    # (e.g., ProjectSettings.dhcp can be None in API responses but validation rejects it)
+    configuration.client_side_validation = False
+    corellium_api.Configuration.set_default(configuration)
+
     # Track current device resources
     current_device_ids: set[str] = set()
 
@@ -269,9 +274,9 @@ def create_server() -> FastMCP:
         name: Annotated[str, Field(description="Instance name")],
         flavor: Annotated[str, Field(description="Device flavor/type", examples=["ranchu", "iphone6"])],
         os: Annotated[str, Field(description="OS version", examples=["13.0", "17.0"])],
+        osbuild: Annotated[str, Field(description="OS build version", examples=["17A577", "19A404"])],
         project_id: Annotated[str | None, Field(description="Project UUID (optional, uses default project if not provided)")] = None,
         jailbroken: Annotated[bool, Field(description="Whether to jailbreak the device (default: True)")] = True,
-        osbuild: Annotated[str | None, Field(description="OS build version (optional)")] = None
     ) -> dict:
         """
         Create a new Corellium device instance.

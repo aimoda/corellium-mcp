@@ -427,8 +427,7 @@ def create_server() -> FastMCP:
     @mcp.tool
     async def type_text(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
-        text: Annotated[str, Field(description="Text to type into the device")],
-        key_duration: Annotated[float, Field(description="Duration in seconds to type each key")] = 0.15
+        text: Annotated[str, Field(description="Text to type into the device")]
     ) -> dict:
         """
         Type text into a Corellium device instance.
@@ -436,11 +435,9 @@ def create_server() -> FastMCP:
         async with corellium_api.ApiClient(configuration) as api_client:
             api = corellium_api.CorelliumApi(api_client)
 
-            # Create text input using InstanceInput
-            input_obj = corellium_api.InstanceInput(
-                required=text,
-                key_duration=key_duration
-            )
+            input_obj = {
+                "text": text
+            }
 
             # Send input to device
             response = await api.v1_post_instance_input(instance_id, [input_obj])  # type: ignore[misc]

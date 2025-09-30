@@ -221,6 +221,50 @@ def create_server() -> FastMCP:
         return f"Hello, {name}!"
 
     @mcp.tool
+    async def get_supported_models() -> list[dict]:
+        """
+        Get list of all supported device models available in Corellium.
+
+        Returns information about each model including type, name, flavor, and hardware details.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            models = await api.v1_get_models()  # type: ignore[misc]
+
+            return [model.to_dict() for model in models]  # type: ignore[misc, union-attr]
+
+    @mcp.tool
+    async def get_model_software(
+        model: Annotated[str, Field(description="Device model identifier", examples=["iPhone8,1", "iPhone14,2"])]
+    ) -> list[dict]:
+        """
+        Get available firmware/software versions for a specific device model.
+
+        Returns a list of available firmware versions with details including version,
+        build ID, checksums, size, and download URLs.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            # Make raw API call to avoid deserialization issues with empty datetime fields
+            url = f"{configuration.host}/v1/models/{model}/software"
+            headers = {
+                "Authorization": f"Bearer {configuration.access_token}",  # type: ignore[attr-defined]
+                "Accept": "application/json"
+            }
+
+            response = await api_client.rest_client.request(
+                method="GET",
+                url=url,
+                headers=headers
+            )
+
+            if response.status != 200:
+                raise Exception(f"Failed to get model software: {response.status} {response.reason}")
+
+            # Parse JSON response
+            firmwares_data = json.loads(response.data.decode('utf-8'))  # type: ignore[attr-defined]
+            return firmwares_data if isinstance(firmwares_data, list) else []
+
+    @mcp.tool
     async def create_instance(
         name: Annotated[str, Field(description="Instance name")],
         flavor: Annotated[str, Field(description="Device flavor/type", examples=["ranchu", "iphone6"])],

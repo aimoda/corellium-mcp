@@ -824,6 +824,143 @@ def create_server() -> FastMCP:
             response = await api.v1_post_instance_input(instance_id, [input_obj])  # type: ignore[misc]
 
     @mcp.tool
+    async def execute_ssh_command(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        command: Annotated[str, Field(description="Command to execute on the device")],
+        timeout: Annotated[int, Field(description="Command timeout in seconds (default: 30)")] = 30,
+        working_directory: Annotated[str | None, Field(description="Optional working directory to execute command in")] = None
+    ) -> dict:
+        """
+        Execute a command on a Corellium device instance via SSH.
+
+        Connects to the device via SSH and executes the specified command,
+        returning stdout, stderr, and exit code.
+
+        Only works on jailbroken devices.
+        """
+        nonlocal ssh_key
+
+        if ssh_key is None:
+            raise ValueError("SSH key not initialized. Server may still be starting up.")
+
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+
+            # Get instance details
+            instance = await api.v1_get_instance(instance_id)  # type: ignore[misc]
+            project_id = getattr(instance, 'project', None)
+            service_ip = getattr(instance, 'service_ip', None)
+
+            if not project_id:
+                raise ValueError(f"Could not determine project ID for instance {instance_id}")
+            if not service_ip:
+                raise ValueError(f"Could not determine service IP for instance {instance_id}")
+
+            # Create public key string
+            public_key = f"{ssh_key.get_name()} {ssh_key.get_base64()} mcp-ssh-exec"
+
+            # Add SSH key to project
+            import time
+            key_label = f"mcp-ssh-exec-{int(time.time())}"
+            project_key = {
+                "type": "ssh",
+                "label": key_label,
+                "key": public_key
+            }
+
+            added_key = await api.v1_add_project_key(project_id, project_key)  # type: ignore[misc]
+            key_id = getattr(added_key, 'identifier', None)
+
+            if not key_id:
+                raise ValueError("Failed to add SSH key to project")
+
+            transport = None
+            ssh_client = None
+
+            try:
+                # Get SSH host from environment or use default
+                ssh_host = os.getenv("CORELLIUM_SSH_HOST", "proxy.enterprise.corellium.com")
+
+                # Connect to SSH proxy
+                transport = paramiko.Transport((ssh_host, 22))
+
+                # Disable problematic algorithms
+                transport.get_security_options().digests = tuple(
+                    d for d in transport.get_security_options().digests
+                    if d not in ("hmac-sha2-512", "hmac-sha2-256")
+                )
+
+                # Connect with project_id as username
+                transport.connect(hostkey=None, username=project_id, pkey=ssh_key)
+
+                # Remove SSH key from project now that we're connected
+                try:
+                    await api.v1_remove_project_key(project_id, key_id)  # type: ignore[misc]
+                except Exception as e:
+                    print(f"Warning: Failed to remove SSH key: {e}")
+
+                # Open channel to device
+                service_channel = transport.open_channel(
+                    "direct-tcpip",
+                    (service_ip, 22),
+                    ("", 0)
+                )
+
+                # Create SSH client and connect through channel
+                ssh_client = paramiko.SSHClient()
+                ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh_client.connect(
+                    hostname=service_ip,
+                    username="root",
+                    password="alpine",
+                    sock=service_channel,
+                    disabled_algorithms=dict(pubkeys=["rsa-sha2-512", "rsa-sha2-256"]),
+                    allow_agent=False
+                )
+
+                # Prepare command with optional working directory
+                full_command = command
+                if working_directory:
+                    full_command = f"cd {working_directory} && {command}"
+
+                # Execute command
+                stdin, stdout, stderr = ssh_client.exec_command(full_command, timeout=timeout)
+
+                # Read output
+                stdout_data = stdout.read().decode('utf-8', errors='replace')
+                stderr_data = stderr.read().decode('utf-8', errors='replace')
+                exit_code = stdout.channel.recv_exit_status()
+
+                return {
+                    "stdout": stdout_data,
+                    "stderr": stderr_data,
+                    "exit_code": exit_code,
+                    "command": full_command
+                }
+
+            except Exception as e:
+                # Clean up key on error if it wasn't removed yet
+                try:
+                    await api.v1_remove_project_key(project_id, key_id)  # type: ignore[misc]
+                except Exception:
+                    pass
+
+                raise Exception(f"Failed to execute SSH command: {type(e).__name__}: {e}")
+
+            finally:
+                # Clean up connections
+                if ssh_client:
+                    try:
+                        ssh_client.close()
+                    except Exception:
+                        pass
+                if transport:
+                    try:
+                        transport.close()
+                    except Exception:
+                        pass
+
+    @mcp.tool
     async def start_kernel_debug_port_forward(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
         local_port: Annotated[int, Field(description="Local TCP port to bind (default: 4000)")] = 4000,

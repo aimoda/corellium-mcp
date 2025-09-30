@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=0.2.0",
     "corellium-api>=0.4.1",
+    "paramiko>=3.0.0",
 ]
 
 [project.scripts]

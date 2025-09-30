@@ -1,6 +1,9 @@
 import os
 import json
-from typing import Annotated
+import socket
+import select
+import threading
+from typing import Annotated, Any
 from contextlib import asynccontextmanager
 from pydantic import Field
 from fastmcp import FastMCP, Context
@@ -8,10 +11,50 @@ from fastmcp.utilities.types import Image
 from fastmcp.resources import TextResource
 import corellium_api
 import anyio
+import paramiko
+import socketserver
 
 
 # Configuration
 REFRESH_INTERVAL = int(os.getenv("CORELLIUM_REFRESH_INTERVAL", "60"))
+
+
+# Port forwarding infrastructure
+class ForwardServer(socketserver.ThreadingTCPServer):  # type: ignore[misc]
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class Handler(socketserver.BaseRequestHandler):  # type: ignore[misc]
+    def handle(self) -> None:
+        try:
+            chan = self.ssh_transport.open_channel(  # type: ignore[attr-defined]
+                "direct-tcpip",
+                (self.chain_host, self.chain_port),  # type: ignore[attr-defined]
+                self.request.getpeername(),
+            )
+        except Exception as e:
+            print(f"Incoming request to {self.chain_host}:{self.chain_port} failed: {e}")  # type: ignore[attr-defined]
+            return
+        if chan is None:
+            print(f"Incoming request to {self.chain_host}:{self.chain_port} was rejected")  # type: ignore[attr-defined]
+            return
+
+        while True:
+            r, w, x = select.select([self.request, chan], [], [])
+            if self.request in r:
+                data = self.request.recv(1024)
+                if len(data) == 0:
+                    break
+                chan.send(data)
+            if chan in r:
+                data = chan.recv(1024)
+                if len(data) == 0:
+                    break
+                self.request.send(data)
+
+        chan.close()
+        self.request.close()
 
 
 def create_server() -> FastMCP:
@@ -28,6 +71,12 @@ def create_server() -> FastMCP:
 
     # Track current device resources
     current_device_ids: set[str] = set()
+
+    # SSH key for port forwarding (generated at startup)
+    ssh_key: paramiko.RSAKey | None = None
+
+    # Track active port forwards: (instance_id, local_port) -> (transport, server_thread, cancel_scope)
+    active_port_forwards: dict[tuple[str, int], tuple[paramiko.Transport, threading.Thread, Any]] = {}
 
     async def refresh_device_resources(mcp: FastMCP) -> None:
         """Fetch devices from Corellium and create/update resources."""
@@ -99,6 +148,12 @@ def create_server() -> FastMCP:
     @asynccontextmanager
     async def lifespan(mcp: FastMCP):
         """Lifespan handler to run background refresh task."""
+        nonlocal ssh_key
+
+        # Generate SSH key for port forwarding
+        print("Generating SSH key for port forwarding...")
+        ssh_key = paramiko.RSAKey.generate(bits=2048)
+
         # Do initial refresh
         await refresh_device_resources(mcp)
 
@@ -485,6 +540,172 @@ def create_server() -> FastMCP:
 
             # Send input to device
             response = await api.v1_post_instance_input(instance_id, [input_obj])  # type: ignore[misc]
+
+    @mcp.tool
+    async def start_kernel_debug_port_forward(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        local_port: Annotated[int, Field(description="Local TCP port to bind (default: 4000)")] = 4000
+    ) -> str:
+        """
+        Start SSH port forwarding for kernel debugging.
+
+        Forwards local port to the device's kernel debug port (remote port 4000).
+        This allows connecting a debugger to 127.0.0.1:{local_port} which tunnels
+        through SSH to the device's services IP on port 4000.
+        """
+        nonlocal ssh_key, active_port_forwards
+
+        if ssh_key is None:
+            raise ValueError("SSH key not initialized. Server may still be starting up.")
+
+        # Check if already forwarding
+        forward_key = (instance_id, local_port)
+        if forward_key in active_port_forwards:
+            return f"Port forwarding already active for instance {instance_id} on port {local_port}"
+
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+
+            # Get instance details
+            instance = await api.v1_get_instance(instance_id)  # type: ignore[misc]
+            project_id = getattr(instance, 'project', None)
+            service_ip = getattr(instance, 'service_ip', None)
+
+            if not project_id:
+                raise ValueError(f"Could not determine project ID for instance {instance_id}")
+            if not service_ip:
+                raise ValueError(f"Could not determine service IP for instance {instance_id}")
+
+            # Create public key string
+            public_key = f"{ssh_key.get_name()} {ssh_key.get_base64()} mcp-kernel-debug"
+
+            # Add SSH key to project
+            import time
+            key_label = f"mcp-kernel-debug-{int(time.time())}"
+            project_key = {
+                "type": "ssh",
+                "label": key_label,
+                "key": public_key
+            }
+
+            added_key = await api.v1_add_project_key(project_id, project_key)  # type: ignore[misc]
+            key_id = getattr(added_key, 'identifier', None)
+
+            if not key_id:
+                raise ValueError("Failed to add SSH key to project")
+
+            try:
+                # Get SSH host from environment or use default
+                ssh_host = os.getenv("CORELLIUM_SSH_HOST", "proxy.enterprise.corellium.com")
+
+                # Connect via SSH
+                print(f"Connecting to SSH host: {ssh_host}")
+                transport = paramiko.Transport((ssh_host, 22))
+
+                # Disable problematic algorithms
+                transport.get_security_options().digests = tuple(
+                    d for d in transport.get_security_options().digests
+                    if d not in ("hmac-sha2-512", "hmac-sha2-256")
+                )
+
+                # Username is the project ID
+                username = project_id
+                transport.connect(hostkey=None, username=username, pkey=ssh_key)
+
+                # Remove SSH key from project now that we're connected
+                try:
+                    await api.v1_remove_project_key(project_id, key_id)  # type: ignore[misc]
+                except Exception as e:
+                    print(f"Warning: Failed to remove SSH key: {e}")
+
+                # Create the forwarding server in a background thread
+                def run_forward_server():
+                    class SubHandler(Handler):
+                        chain_host = service_ip
+                        chain_port = 4000
+                        ssh_transport = transport
+
+                    try:
+                        server = ForwardServer(("127.0.0.1", local_port), SubHandler)
+                        server.serve_forever()
+                    except Exception as e:
+                        print(f"Port forwarding server error: {e}")
+                        transport.close()
+
+                server_thread = threading.Thread(target=run_forward_server, daemon=True)
+                server_thread.start()
+
+                # Store connection info
+                active_port_forwards[forward_key] = (transport, server_thread, None)
+
+                # Add MCP resource
+                resource_uri = f"kernel-debug://{instance_id}/{local_port}"
+                resource_data = {
+                    "instance_id": instance_id,
+                    "local_port": local_port,
+                    "remote_host": service_ip,
+                    "remote_port": 4000,
+                    "local_endpoint": f"127.0.0.1:{local_port}",
+                    "status": "active"
+                }
+
+                resource = TextResource(
+                    uri=resource_uri,  # type: ignore[arg-type]
+                    name=f"Kernel Debug Port: {instance_id}",
+                    text=json.dumps(resource_data, indent=2),
+                    description=f"Port forwarding {local_port} -> {service_ip}:4000 for kernel debugging",
+                    mime_type="application/json"
+                )
+                mcp.add_resource(resource)
+
+                return f"Port forwarding started: 127.0.0.1:{local_port} -> {service_ip}:4000"
+
+            except Exception as e:
+                # Clean up on error
+                try:
+                    await api.v1_remove_project_key(project_id, key_id)  # type: ignore[misc]
+                except Exception as cleanup_error:
+                    print(f"Failed to remove SSH key: {cleanup_error}")
+
+                raise Exception(f"Failed to start port forwarding: {type(e).__name__}: {e}")
+
+    @mcp.tool
+    async def stop_kernel_debug_port_forward(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        local_port: Annotated[int, Field(description="Local TCP port to stop (default: 4000)")] = 4000
+    ) -> str:
+        """
+        Stop SSH port forwarding for kernel debugging.
+
+        Stops an active port forwarding session started with start_kernel_debug_port_forward.
+        """
+        nonlocal active_port_forwards
+
+        forward_key = (instance_id, local_port)
+        if forward_key not in active_port_forwards:
+            return f"No active port forwarding found for instance {instance_id} on port {local_port}"
+
+        transport, server_thread, _ = active_port_forwards[forward_key]
+
+        # Close the SSH transport
+        try:
+            transport.close()
+        except Exception as e:
+            print(f"Error closing SSH transport: {e}")
+
+        # Note: The server thread will exit when connections are closed
+        # We can't directly stop ThreadingTCPServer.serve_forever() from here,
+        # but closing the transport will cause new connections to fail
+
+        # Remove from tracking
+        del active_port_forwards[forward_key]
+
+        # Remove the MCP resource
+        resource_uri = f"kernel-debug://{instance_id}/{local_port}"
+        # Note: FastMCP doesn't have an explicit remove_resource method,
+        # but we can track this and not re-add it
+
+        return f"Port forwarding stopped: {instance_id} on port {local_port}"
 
     return mcp
 

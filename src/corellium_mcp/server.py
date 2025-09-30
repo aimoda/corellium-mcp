@@ -145,6 +145,40 @@ def create_server() -> FastMCP:
             # Log error but don't crash the background task
             print(f"Error refreshing device resources: {e}")
 
+    async def monitor_port_forwards(mcp: FastMCP) -> None:
+        """Monitor active port forwards and clean up dead connections."""
+        nonlocal active_port_forwards
+
+        while True:
+            await anyio.sleep(5)  # Check every 5 seconds
+
+            dead_forwards: list[tuple[str, int]] = []
+
+            for forward_key, (transport, server_thread, _) in list(active_port_forwards.items()):
+                # Check if transport is still active
+                if not transport.is_active():
+                    dead_forwards.append(forward_key)
+
+            # Clean up dead forwards
+            for forward_key in dead_forwards:
+                instance_id, local_port = forward_key
+                print(f"Port forward disconnected: {instance_id} on port {local_port}")
+
+                # Remove from tracking
+                if forward_key in active_port_forwards:
+                    del active_port_forwards[forward_key]
+
+            # Refresh resources and notify client if any were removed
+            if dead_forwards:
+                await refresh_port_forward_resources(mcp)
+                try:
+                    from fastmcp.server.dependencies import get_context
+                    ctx = get_context()
+                    await ctx.send_resource_list_changed()
+                except RuntimeError:
+                    # No context available
+                    pass
+
     @asynccontextmanager
     async def lifespan(mcp: FastMCP):
         """Lifespan handler to run background refresh task."""
@@ -165,6 +199,7 @@ def create_server() -> FastMCP:
                     await refresh_device_resources(mcp)
 
             tg.start_soon(refresh_loop)
+            tg.start_soon(monitor_port_forwards, mcp)
 
             try:
                 yield
@@ -181,6 +216,30 @@ def create_server() -> FastMCP:
         A simple hello world tool that greets the provided name.
         """
         return f"Hello, {name}!"
+
+    async def refresh_port_forward_resources(mcp: FastMCP) -> None:
+        """Update resources for active port forwards."""
+        nonlocal active_port_forwards
+
+        for (instance_id, local_port), (transport, _, _) in active_port_forwards.items():
+            resource_uri = f"kernel-debug://{instance_id}/{local_port}"
+
+            resource_data = {
+                "instance_id": instance_id,
+                "local_port": local_port,
+                "remote_port": 4000,
+                "local_endpoint": f"127.0.0.1:{local_port}",
+                "status": "active" if transport.is_active() else "disconnected"
+            }
+
+            resource = TextResource(
+                uri=resource_uri,  # type: ignore[arg-type]
+                name=f"Kernel Debug Port Forward: {instance_id}:{local_port}",
+                text=json.dumps(resource_data, indent=2),
+                description=f"Port forwarding 127.0.0.1:{local_port} -> port 4000 for kernel debugging",
+                mime_type="application/json"
+            )
+            mcp.add_resource(resource)
 
     @mcp.resource("corellium://devices/{instance_id}/hooks")
     async def list_device_hooks(instance_id: str) -> dict:
@@ -544,7 +603,8 @@ def create_server() -> FastMCP:
     @mcp.tool
     async def start_kernel_debug_port_forward(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
-        local_port: Annotated[int, Field(description="Local TCP port to bind (default: 4000)")] = 4000
+        local_port: Annotated[int, Field(description="Local TCP port to bind (default: 4000)")] = 4000,
+        ctx: Context | None = None
     ) -> str:
         """
         Start SSH port forwarding for kernel debugging.
@@ -638,25 +698,10 @@ def create_server() -> FastMCP:
                 # Store connection info
                 active_port_forwards[forward_key] = (transport, server_thread, None)
 
-                # Add MCP resource
-                resource_uri = f"kernel-debug://{instance_id}/{local_port}"
-                resource_data = {
-                    "instance_id": instance_id,
-                    "local_port": local_port,
-                    "remote_host": service_ip,
-                    "remote_port": 4000,
-                    "local_endpoint": f"127.0.0.1:{local_port}",
-                    "status": "active"
-                }
-
-                resource = TextResource(
-                    uri=resource_uri,  # type: ignore[arg-type]
-                    name=f"Kernel Debug Port: {instance_id}",
-                    text=json.dumps(resource_data, indent=2),
-                    description=f"Port forwarding {local_port} -> {service_ip}:4000 for kernel debugging",
-                    mime_type="application/json"
-                )
-                mcp.add_resource(resource)
+                # Add resource and notify client
+                await refresh_port_forward_resources(mcp)
+                if ctx:
+                    await ctx.send_resource_list_changed()
 
                 return f"Port forwarding started: 127.0.0.1:{local_port} -> {service_ip}:4000"
 
@@ -672,7 +717,8 @@ def create_server() -> FastMCP:
     @mcp.tool
     async def stop_kernel_debug_port_forward(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
-        local_port: Annotated[int, Field(description="Local TCP port to stop (default: 4000)")] = 4000
+        local_port: Annotated[int, Field(description="Local TCP port to stop (default: 4000)")] = 4000,
+        ctx: Context | None = None
     ) -> str:
         """
         Stop SSH port forwarding for kernel debugging.
@@ -700,10 +746,10 @@ def create_server() -> FastMCP:
         # Remove from tracking
         del active_port_forwards[forward_key]
 
-        # Remove the MCP resource
-        resource_uri = f"kernel-debug://{instance_id}/{local_port}"
-        # Note: FastMCP doesn't have an explicit remove_resource method,
-        # but we can track this and not re-add it
+        # Refresh resources and notify client
+        await refresh_port_forward_resources(mcp)
+        if ctx:
+            await ctx.send_resource_list_changed()
 
         return f"Port forwarding stopped: {instance_id} on port {local_port}"
 

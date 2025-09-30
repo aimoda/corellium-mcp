@@ -424,6 +424,91 @@ def create_server() -> FastMCP:
 
             return bytes_written
 
+    @mcp.tool
+    async def type_text(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        text: Annotated[str, Field(description="Text to type into the device")],
+        key_duration: Annotated[float, Field(description="Duration in seconds to type each key")] = 0.15
+    ) -> dict:
+        """
+        Type text into a Corellium device instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+
+            # Create text input using InstanceInput
+            input_obj = corellium_api.InstanceInput(
+                required=text,
+                key_duration=key_duration
+            )
+
+            # Send input to device
+            response = await api.v1_post_instance_input(instance_id, [input_obj])  # type: ignore[misc]
+
+            return {
+                "success": True,
+                "instance_id": instance_id,
+                "text": text,
+                "message": "Text typed successfully"
+            }
+
+    @mcp.tool
+    async def press_button(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        buttons: Annotated[list[str], Field(description="List of button names to press")]
+    ) -> dict:
+        """
+        Press device buttons on a Corellium device.
+
+        IMPORTANT: All buttons in the list will be pressed simultaneously. For duplicate key presses
+        or sequential button presses, call this tool multiple times.
+
+        This tool should be used to control the device, as Full Keyboard Access is enabled by default
+        on all Corellium devices, allowing navigation and interaction through button presses. Use space to activate the selected item.
+
+        Available VM buttons: homeButton, holdButton, volumeUp, volumeDown, ringerSwitch, backButton, overviewButton
+
+        Available Keyboard buttons: again, alt, alterase, apostrophe, back, backslash, backspace,
+        bassboost, bookmarks, bsp, calc, camera, cancel, caps, capslock, chat, close, closecd, comma,
+        compose, computer, config, connect, copy, ctrl, cut, cyclewindows, dashboard, del, delete,
+        deletefile, dot, down, edit, eject, ejectclose, email, end, enter, equal, esc, escape, exit,
+        f1, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19, f2, f20, f21, f22, f23, f24, f3, f4, f5,
+        f6, f7, f8, f9, fastfwd, file, finance, find, forward, front, grave, hangeul, hanja, help,
+        henkan, home, homepage, hp, hrgn, ins, insert, iso, k102, kp0, kp1, kp2, kp3, kp4, kp5, kp6,
+        kp7, kp8, kp9, kpasterisk, kpcomma, kpdot, kpenter, kpequal, kpjpcomma, kpleftparen, kpminus,
+        kpplus, kpplusminus, kprightparen, kpslash, ktkn, ktknhrgn, left, leftalt, leftbrace, leftctrl,
+        leftmeta, leftshift, linefeed, macro, mail, menu, meta, minus, move, msdos, muhenkan, mute, new,
+        next, numlock, open, pagedown, pageup, paste, pause, pausecd, pgdn, pgup, phone, play, playcd,
+        playpause, power, previous, print, prog1, prog2, prog3, prog4, props, question, record, redo,
+        refresh, return, rewind, right, rightalt, rightbrace, rightctrl, rightmeta, rightshift, ro,
+        rotate, scale, screenlock, scrolldown, scrolllock, scrollup, search, semicolon, sendfile, setup,
+        shift, shop, slash, sleep, sound, space, sport, stop, stopcd, suspend, sysrq, tab, undo, up,
+        voldown, volup, wakeup, www, xfer, yen, zkhk
+        """
+        # Check for duplicate buttons
+        if len(buttons) != len(set(buttons)):
+            duplicates = [btn for btn in set(buttons) if buttons.count(btn) > 1]
+            raise ValueError(f"Duplicate buttons not allowed. Found duplicates: {', '.join(duplicates)}")
+
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+
+            # Create button press input with empty position
+            input_obj = corellium_api.TouchInput(
+                position=[],
+                buttons=buttons
+            )
+
+            # Send input to device
+            response = await api.v1_post_instance_input(instance_id, [input_obj])  # type: ignore[misc]
+
+            return {
+                "success": True,
+                "instance_id": instance_id,
+                "buttons_pressed": buttons,
+                "message": "Button press executed successfully"
+            }
+
     return mcp
 
 

@@ -379,6 +379,60 @@ def create_server() -> FastMCP:
 
             return bytes_written
 
+    @mcp.tool
+    async def download_kernel_binary(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to authorize the request")],
+        model: Annotated[str, Field(description="Device model", examples=["iPhone8,1"])],
+        ios_version: Annotated[str, Field(description="iOS version", examples=["19A404"])],
+        filepath: Annotated[str, Field(description="File path to write the kernel Mach-O binary to")]
+    ) -> int:
+        """
+        Download a kernel binary for a specific iOS device model and version.
+        This tool is only available for iOS devices.
+        Returns the number of bytes written to the file.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            # Step 1: Get authorization token
+            auth_url = f"{configuration.host}/v1/instances/{instance_id}/kernel-authorize"
+            headers = {
+                "Authorization": f"Bearer {configuration.access_token}",  # type: ignore[attr-defined]
+                "Accept": "*/*"
+            }
+
+            auth_response = await api_client.rest_client.request(
+                method="POST",
+                url=auth_url,
+                headers=headers
+            )
+
+            if auth_response.status != 200:
+                raise Exception(f"Failed to authorize kernel download: {auth_response.status} {auth_response.reason}")
+
+            # Parse the token from response
+            auth_data = json.loads(auth_response.data.decode('utf-8'))  # type: ignore[attr-defined]
+            token = auth_data.get("token")
+            if not token:
+                raise Exception("No token received from authorization endpoint")
+
+            # Step 2: Download the kernel binary
+            kernel_url = f"{configuration.host}/v1/preauthed/{token}/kernel-{model}-{ios_version}"
+
+            kernel_response = await api_client.rest_client.request(
+                method="GET",
+                url=kernel_url,
+                headers={"Accept": "*/*"}
+            )
+
+            if kernel_response.status != 200:
+                raise Exception(f"Failed to download kernel binary: {kernel_response.status} {kernel_response.reason}")
+
+            # Write binary data to file
+            kernel_data = kernel_response.data  # type: ignore[attr-defined]
+            with open(filepath, 'wb') as f:
+                bytes_written = f.write(kernel_data)
+
+            return bytes_written
+
     return mcp
 
 

@@ -47,35 +47,26 @@ def create_server() -> FastMCP:
 
                     new_device_ids.add(instance_id)
 
-                    # Extract device info
-                    state_value = None
-                    if hasattr(instance, 'state') and instance.state and hasattr(instance.state, 'state'):
-                        state_value = instance.state.state
+                    # Convert instance to dict for JSON serialization
+                    try:
+                        instance_dict = instance.to_dict()  # type: ignore[union-attr]
+                    except (AttributeError, TypeError):
+                        # Fallback to manual serialization
+                        instance_dict = {k: v for k, v in instance.__dict__.items() if not k.startswith('_')}  # type: ignore[union-attr]
 
-                    created_value = None
-                    if hasattr(instance, 'created') and instance.created:
-                        created_value = instance.created.isoformat()
-
-                    device_info = {
-                        "id": instance_id,
-                        "name": getattr(instance, 'name', None),
-                        "model": getattr(instance, 'model', None),
-                        "os": getattr(instance, 'os', None),
-                        "state": state_value,
-                        "flavor": getattr(instance, 'flavor', None),
-                        "created": created_value,
-                        "project": getattr(instance, 'project', None),
-                    }
+                    # Extract info for description
+                    device_name = getattr(instance, 'name', instance_id)
+                    flavor = getattr(instance, 'flavor', 'Unknown')
+                    os_version = getattr(instance, 'os', 'Unknown')
 
                     # Create/update resource for this device
-                    resource_uri = f"corellium://device/{instance_id}"
-                    device_name = getattr(instance, 'name', instance_id)
+                    resource_uri = f"device://{instance_id}"
 
                     resource = TextResource(
                         uri=resource_uri,  # type: ignore[arg-type]
                         name=f"Device: {device_name}",
-                        text=json.dumps(device_info, indent=2),
-                        description=f"Corellium device {device_name} ({instance_id})",
+                        text=json.dumps(instance_dict, indent=2, default=str),
+                        description=f"Corellium device {device_name} - {flavor} {os_version} ({instance_id})",
                         mime_type="application/json"
                     )
                     mcp.add_resource(resource)
@@ -83,7 +74,7 @@ def create_server() -> FastMCP:
                 # Remove resources for devices that no longer exist
                 removed_ids = current_device_ids - new_device_ids
                 for removed_id in removed_ids:
-                    resource_uri = f"corellium://device/{removed_id}"
+                    resource_uri = f"device://device/{removed_id}"
                     # Note: FastMCP doesn't have a remove_resource method, but replacing is fine
                     # Resources will be overwritten on next add_resource call
 

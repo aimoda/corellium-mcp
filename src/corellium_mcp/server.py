@@ -72,6 +72,9 @@ def create_server() -> FastMCP:
     # Track current device resources
     current_device_ids: set[str] = set()
 
+    # Track current port forward resource URIs
+    current_port_forward_uris: set[str] = set()
+
     # SSH key for port forwarding (generated at startup)
     ssh_key: paramiko.RSAKey | None = None
 
@@ -217,12 +220,146 @@ def create_server() -> FastMCP:
         """
         return f"Hello, {name}!"
 
+    @mcp.tool
+    async def create_instance(
+        name: Annotated[str, Field(description="Instance name")],
+        flavor: Annotated[str, Field(description="Device flavor/type", examples=["ranchu", "iphone6"])],
+        os: Annotated[str, Field(description="OS version", examples=["13.0", "17.0"])],
+        project_id: Annotated[str | None, Field(description="Project UUID (optional, uses default project if not provided)")] = None,
+        jailbroken: Annotated[bool, Field(description="Whether to jailbreak the device (default: True)")] = True,
+        osbuild: Annotated[str | None, Field(description="OS build version (optional)")] = None
+    ) -> dict:
+        """
+        Create a new Corellium device instance.
+
+        If project_id is not provided, the default project will be used automatically.
+        The jailbroken flag determines the patches applied:
+        - jailbroken=True: applies ["jailbroken"] patches
+        - jailbroken=False: applies ["corelliumd"] patches
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+
+            # Get project_id if not provided
+            if project_id is None:
+                projects = await api.v1_get_projects()  # type: ignore[misc]
+                if not projects or len(projects) == 0:  # type: ignore[arg-type]
+                    raise ValueError("No projects found. Please provide a project_id.")
+                project_id = getattr(projects[0], 'id', None)  # type: ignore[index]
+                if not project_id:
+                    raise ValueError("Could not determine default project ID.")
+
+            # Set patches based on jailbroken flag
+            patches = ["jailbroken"] if jailbroken else ["corelliumd"]
+
+            # Create instance options
+            instance_options = corellium_api.InstanceCreateOptions(
+                name=name,
+                flavor=flavor,
+                project=project_id,
+                os=os,
+                osbuild=osbuild,
+                patches=patches
+            )
+
+            # Create the instance
+            instance = await api.v1_create_instance(instance_options)  # type: ignore[misc]
+
+            # Return key fields from the instance
+            return {
+                "id": getattr(instance, 'id', None),
+                "name": getattr(instance, 'name', None),
+                "flavor": getattr(instance, 'flavor', None),
+                "type": getattr(instance, 'type', None),
+                "project": getattr(instance, 'project', None),
+                "state": getattr(instance, 'state', None),
+                "model": getattr(instance, 'model', None),
+                "os": getattr(instance, 'os', None),
+                "patches": getattr(instance, 'patches', None),
+                "service_ip": getattr(instance, 'service_ip', None),
+                "wifi_ip": getattr(instance, 'wifi_ip', None),
+                "created": getattr(instance, 'created', None)
+            }
+
+    @mcp.tool
+    async def delete_instance(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to delete")]
+    ) -> None:
+        """
+        Delete a Corellium device instance.
+
+        This permanently removes the instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_delete_instance(instance_id)  # type: ignore[misc]
+
+    @mcp.tool
+    async def start_instance(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to start")]
+    ) -> None:
+        """
+        Start a stopped Corellium device instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_start_instance(instance_id)  # type: ignore[misc]
+
+    @mcp.tool
+    async def stop_instance(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to stop")]
+    ) -> None:
+        """
+        Stop a running Corellium device instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_stop_instance(instance_id)  # type: ignore[misc]
+
+    @mcp.tool
+    async def reboot_instance(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to reboot")]
+    ) -> None:
+        """
+        Reboot a running Corellium device instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_reboot_instance(instance_id)  # type: ignore[misc]
+
+    @mcp.tool
+    async def pause_instance(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to pause")]
+    ) -> None:
+        """
+        Pause a running Corellium device instance.
+
+        Paused instances can be resumed with unpause_instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_pause_instance(instance_id)  # type: ignore[misc]
+
+    @mcp.tool
+    async def unpause_instance(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to unpause")]
+    ) -> None:
+        """
+        Unpause a paused Corellium device instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_unpause_instance(instance_id)  # type: ignore[misc]
+
     async def refresh_port_forward_resources(mcp: FastMCP) -> None:
         """Update resources for active port forwards."""
-        nonlocal active_port_forwards
+        nonlocal active_port_forwards, current_port_forward_uris
+
+        new_port_forward_uris: set[str] = set()
 
         for (instance_id, local_port), (transport, _, _) in active_port_forwards.items():
             resource_uri = f"kernel-debug://{instance_id}/{local_port}"
+            new_port_forward_uris.add(resource_uri)
 
             resource_data = {
                 "instance_id": instance_id,
@@ -240,6 +377,15 @@ def create_server() -> FastMCP:
                 mime_type="application/json"
             )
             mcp.add_resource(resource)
+
+        # Remove resources for port forwards that no longer exist
+        removed_uris = current_port_forward_uris - new_port_forward_uris
+        for removed_uri in removed_uris:
+            # Directly remove from resource manager since FastMCP doesn't have a remove_resource method
+            mcp._resource_manager._resources.pop(removed_uri, None)
+
+        # Update tracking
+        current_port_forward_uris = new_port_forward_uris
 
     @mcp.resource("corellium://devices/{instance_id}/hooks")
     async def list_device_hooks(instance_id: str) -> dict:

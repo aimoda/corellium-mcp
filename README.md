@@ -17,6 +17,16 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e .
 ```
 
+### 3. Add to Claude Code
+
+After completing the setup steps above, add the MCP server to Claude Code:
+
+```bash
+claude mcp add --scope user corellium -- <path-to-this-repo>/venv/bin/corellium-mcp
+```
+
+Replace `<path-to-this-repo>` with the actual path to this repository.
+
 ## Usage
 
 Run with stdio transport (default):

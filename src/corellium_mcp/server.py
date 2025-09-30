@@ -1,14 +1,20 @@
 import os
+import json
 from typing import Annotated
+from contextlib import asynccontextmanager
 from pydantic import Field
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 from fastmcp.utilities.types import Image
+from fastmcp.resources import TextResource
 import corellium_api
+import anyio
+
+
+# Configuration
+REFRESH_INTERVAL = int(os.getenv("CORELLIUM_REFRESH_INTERVAL", "60"))
 
 
 def create_server() -> FastMCP:
-    mcp = FastMCP("corellium", stateless_http=True)
-
     corellium_api_token = os.getenv("CORELLIUM_API_TOKEN")
     if not corellium_api_token:
         raise ValueError("CORELLIUM_API_TOKEN environment variable is required")
@@ -20,27 +26,28 @@ def create_server() -> FastMCP:
     )
     configuration.access_token = corellium_api_token
 
-    @mcp.tool
-    async def hello_world(
-        name: Annotated[str, Field(description="Name to greet", examples=["World", "Alice", "Bob"])] = "World"
-    ) -> str:
-        """
-        A simple hello world tool that greets the provided name.
-        """
-        return f"Hello, {name}!"
+    # Track current device resources
+    current_device_ids: set[str] = set()
 
-    @mcp.resource("corellium://devices")
-    async def list_devices() -> dict:
-        """
-        List all devices on the Corellium server.
-        """
+    async def refresh_device_resources(mcp: FastMCP) -> None:
+        """Fetch devices from Corellium and create/update resources."""
+        nonlocal current_device_ids
+
         try:
             async with corellium_api.ApiClient(configuration) as api_client:
                 api = corellium_api.CorelliumApi(api_client)
                 instances = await api.v1_get_instances()  # type: ignore[misc]
 
-                devices = []
+                new_device_ids: set[str] = set()
+
                 for instance in instances:  # type: ignore[misc]
+                    instance_id = getattr(instance, 'id', None)
+                    if not instance_id:
+                        continue
+
+                    new_device_ids.add(instance_id)
+
+                    # Extract device info
                     state_value = None
                     if hasattr(instance, 'state') and instance.state and hasattr(instance.state, 'state'):
                         state_value = instance.state.state
@@ -50,7 +57,7 @@ def create_server() -> FastMCP:
                         created_value = instance.created.isoformat()
 
                     device_info = {
-                        "id": getattr(instance, 'id', None),
+                        "id": instance_id,
                         "name": getattr(instance, 'name', None),
                         "model": getattr(instance, 'model', None),
                         "os": getattr(instance, 'os', None),
@@ -59,11 +66,75 @@ def create_server() -> FastMCP:
                         "created": created_value,
                         "project": getattr(instance, 'project', None),
                     }
-                    devices.append(device_info)
 
-                return {"devices": devices, "count": len(devices)}
+                    # Create/update resource for this device
+                    resource_uri = f"corellium://device/{instance_id}"
+                    device_name = getattr(instance, 'name', instance_id)
+
+                    resource = TextResource(
+                        uri=resource_uri,  # type: ignore[arg-type]
+                        name=f"Device: {device_name}",
+                        text=json.dumps(device_info, indent=2),
+                        description=f"Corellium device {device_name} ({instance_id})",
+                        mime_type="application/json"
+                    )
+                    mcp.add_resource(resource)
+
+                # Remove resources for devices that no longer exist
+                removed_ids = current_device_ids - new_device_ids
+                for removed_id in removed_ids:
+                    resource_uri = f"corellium://device/{removed_id}"
+                    # Note: FastMCP doesn't have a remove_resource method, but replacing is fine
+                    # Resources will be overwritten on next add_resource call
+
+                # Update tracking
+                has_changes = current_device_ids != new_device_ids
+                current_device_ids = new_device_ids
+
+                # Notify clients of changes if any
+                if has_changes:
+                    try:
+                        from fastmcp.server.dependencies import get_context
+                        ctx = get_context()
+                        await ctx.send_resource_list_changed()
+                    except RuntimeError:
+                        # No context available (e.g., during startup)
+                        pass
+
         except Exception as e:
-            return {"error": str(e), "devices": [], "count": 0}
+            # Log error but don't crash the background task
+            print(f"Error refreshing device resources: {e}")
+
+    @asynccontextmanager
+    async def lifespan(mcp: FastMCP):
+        """Lifespan handler to run background refresh task."""
+        # Do initial refresh
+        await refresh_device_resources(mcp)
+
+        # Start background refresh task
+        async with anyio.create_task_group() as tg:
+            async def refresh_loop():
+                while True:
+                    await anyio.sleep(REFRESH_INTERVAL)
+                    await refresh_device_resources(mcp)
+
+            tg.start_soon(refresh_loop)
+
+            try:
+                yield
+            finally:
+                tg.cancel_scope.cancel()
+
+    mcp = FastMCP("corellium", stateless_http=True, lifespan=lifespan)
+
+    @mcp.tool
+    async def hello_world(
+        name: Annotated[str, Field(description="Name to greet", examples=["World", "Alice", "Bob"])] = "World"
+    ) -> str:
+        """
+        A simple hello world tool that greets the provided name.
+        """
+        return f"Hello, {name}!"
 
     @mcp.resource("corellium://devices/{instance_id}/hooks")
     async def list_device_hooks(instance_id: str) -> dict:

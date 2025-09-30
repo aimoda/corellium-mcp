@@ -281,7 +281,7 @@ def create_server() -> FastMCP:
     @mcp.tool
     async def delete_hypervisor_hook(
         hook_id: Annotated[str, Field(description="Hook ID to delete")]
-    ) -> dict:
+    ) -> None:
         """
         Delete a hypervisor hook.
         """
@@ -289,12 +289,10 @@ def create_server() -> FastMCP:
             api = corellium_api.CorelliumApi(api_client)
             await api.v1_delete_hook(hook_id)  # type: ignore[misc]
 
-            return {"success": True, "hook_id": hook_id, "message": "Hook deleted successfully"}
-
     @mcp.tool
     async def execute_hypervisor_hooks(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) to execute hooks on")]
-    ) -> dict:
+    ) -> None:
         """
         Execute all hypervisor hooks on a device instance.
         This activates all configured hooks.
@@ -303,12 +301,10 @@ def create_server() -> FastMCP:
             api = corellium_api.CorelliumApi(api_client)
             await api.v1_execute_hyper_trace_hooks(instance_id)  # type: ignore[misc]
 
-            return {"success": True, "instance_id": instance_id, "message": "Hooks executed successfully"}
-
     @mcp.tool
     async def clear_hypervisor_hooks(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) to clear hooks on")]
-    ) -> dict:
+    ) -> None:
         """
         Clear/disable all hypervisor hooks on a device instance.
         This deactivates all hooks without deleting them.
@@ -316,8 +312,6 @@ def create_server() -> FastMCP:
         async with corellium_api.ApiClient(configuration) as api_client:
             api = corellium_api.CorelliumApi(api_client)
             await api.v1_clear_hyper_trace_hooks(instance_id)  # type: ignore[misc]
-
-            return {"success": True, "instance_id": instance_id, "message": "Hooks cleared successfully"}
 
     @mcp.tool
     async def get_instance_services_ip(
@@ -428,7 +422,7 @@ def create_server() -> FastMCP:
     async def type_text(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
         text: Annotated[str, Field(description="Text to type into the device")]
-    ) -> dict:
+    ) -> None:
         """
         Type text into a Corellium device instance.
         """
@@ -442,18 +436,11 @@ def create_server() -> FastMCP:
             # Send input to device
             response = await api.v1_post_instance_input(instance_id, [input_obj])  # type: ignore[misc]
 
-            return {
-                "success": True,
-                "instance_id": instance_id,
-                "text": text,
-                "message": "Text typed successfully"
-            }
-
     @mcp.tool
     async def press_button(
         instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
         buttons: Annotated[list[str], Field(description="List of button names to press")]
-    ) -> dict:
+    ) -> None:
         """
         Press device buttons on a Corellium device.
 
@@ -498,13 +485,6 @@ def create_server() -> FastMCP:
 
             # Send input to device
             response = await api.v1_post_instance_input(instance_id, [input_obj])  # type: ignore[misc]
-
-            return {
-                "success": True,
-                "instance_id": instance_id,
-                "buttons_pressed": buttons,
-                "message": "Button press executed successfully"
-            }
 
     return mcp
 

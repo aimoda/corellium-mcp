@@ -285,6 +285,21 @@ def create_server() -> FastMCP:
 
             return getattr(instance, 'wifi_ip', None) or ""
 
+    @mcp.tool
+    async def get_instance_console_log(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to get console log for")]
+    ) -> str:
+        """
+        Get the console log for a Corellium device instance.
+        Returns the current console log output as a string.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            console_log = await api.v1_get_instance_console_log(instance_id)  # type: ignore[misc]
+
+            # API returns str according to docs
+            return str(console_log) if console_log else ""
+
     return mcp
 
 

@@ -1113,6 +1113,269 @@ def create_server() -> FastMCP:
 
         return f"Port forwarding stopped: {instance_id} on port {local_port}"
 
+    @mcp.tool
+    async def upload_file_to_vm(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        vm_file_path: Annotated[str, Field(description="Destination file path on VM")],
+        local_file_path: Annotated[str, Field(description="Source file path on local filesystem")]
+    ) -> dict:
+        """
+        Upload a file from local filesystem to VM.
+
+        Reads the file from the local filesystem and uploads it to the specified path on the VM.
+        """
+        # Read local file
+        with open(local_file_path, 'rb') as f:
+            file_contents = f.read()
+
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_agent_upload_file(instance_id, vm_file_path, file_contents)  # type: ignore[misc]
+
+        return {
+            "success": True,
+            "vm_path": vm_file_path,
+            "local_path": local_file_path,
+            "bytes_uploaded": len(file_contents)
+        }
+
+    @mcp.tool
+    async def download_file_from_vm(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        vm_file_path: Annotated[str, Field(description="Source file path on VM")],
+        local_file_path: Annotated[str, Field(description="Destination file path on local filesystem")]
+    ) -> dict:
+        """
+        Download a file from VM to local filesystem.
+
+        Reads the file from the VM and saves it to the specified path on the local filesystem.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            # API returns a file path to a temporary file
+            temp_file_path = await api.v1_agent_get_file(instance_id, vm_file_path)  # type: ignore[misc]
+
+            # Ensure we have a valid file path string
+            if not isinstance(temp_file_path, str):
+                raise ValueError(f"Expected file path string, got {type(temp_file_path)}")
+
+            # Read the file data from the temporary file
+            with open(temp_file_path, 'rb') as f:
+                file_contents = f.read()
+
+            # Write to local file
+            with open(local_file_path, 'wb') as f:
+                bytes_written = f.write(file_contents)
+
+            return {
+                "success": True,
+                "vm_path": vm_file_path,
+                "local_path": local_file_path,
+                "bytes_downloaded": bytes_written
+            }
+
+    @mcp.tool
+    async def delete_file_on_vm(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        file_path: Annotated[str, Field(description="File path on VM to delete")]
+    ) -> None:
+        """
+        Delete a file on the VM.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_agent_delete_file(instance_id, file_path)  # type: ignore[misc]
+
+    @mcp.tool
+    async def change_file_attributes_on_vm(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        file_path: Annotated[str, Field(description="File path on VM")],
+        new_path: Annotated[str | None, Field(description="New file path (for rename/move)")] = None,
+        mode: Annotated[int | None, Field(description="New file mode/permissions (e.g., 0o755)")] = None,
+        uid: Annotated[int | None, Field(description="New owner user ID")] = None,
+        gid: Annotated[int | None, Field(description="New owner group ID")] = None
+    ) -> None:
+        """
+        Change attributes of a file on VM (path, mode, uid, gid).
+
+        At least one attribute must be specified to change.
+        """
+        # Create FileChanges object with only specified attributes
+        file_changes_dict: dict[str, Any] = {}
+        if new_path is not None:
+            file_changes_dict['path'] = new_path
+        if mode is not None:
+            file_changes_dict['mode'] = float(mode)
+        if uid is not None:
+            file_changes_dict['uid'] = float(uid)
+        if gid is not None:
+            file_changes_dict['gid'] = float(gid)
+
+        if not file_changes_dict:
+            raise ValueError("At least one attribute must be specified to change")
+
+        file_changes = corellium_api.FileChanges(**file_changes_dict)
+
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_agent_set_file_attributes(instance_id, file_path, file_changes)  # type: ignore[misc]
+
+    @mcp.tool
+    async def get_temp_file_path(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")]
+    ) -> str:
+        """
+        Get the path for a new temporary file on VM.
+
+        Returns a unique temporary file path that can be used for temporary file operations.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            temp_path = await api.v1_agent_get_temp_filename(instance_id)  # type: ignore[misc]
+
+        return str(temp_path) if temp_path else ""
+
+    @mcp.tool
+    async def download_netdump_pcap(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        output_file_path: Annotated[str, Field(description="Local file path to save the pcap file")]
+    ) -> int:
+        """
+        Download a netdump pcap file from Enhanced Network Monitor.
+
+        Downloads the packet capture file from the Enhanced Network Monitor and saves it locally.
+        Returns the number of bytes written to the file.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            # API returns a file path to a temporary file
+            pcap_path = await api.v1_instances_instance_id_netdump_pcap_get(instance_id)  # type: ignore[misc]
+
+            # Ensure we have a valid file path string
+            if not isinstance(pcap_path, str):
+                raise ValueError(f"Expected file path string, got {type(pcap_path)}")
+
+            # Read the pcap data from the temporary file
+            with open(pcap_path, 'rb') as f:
+                pcap_data = f.read()
+
+            # Write to output file
+            with open(output_file_path, 'wb') as f:
+                bytes_written = f.write(pcap_data)
+
+            return bytes_written
+
+    @mcp.tool
+    async def download_network_monitor_pcap(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        output_file_path: Annotated[str, Field(description="Local file path to save the pcap file")]
+    ) -> int:
+        """
+        Download a Network Monitor pcap file.
+
+        Downloads the packet capture file from the Network Monitor and saves it locally.
+        Returns the number of bytes written to the file.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            # API returns a file path to a temporary file
+            pcap_path = await api.v1_instances_instance_id_network_monitor_pcap_get(instance_id)  # type: ignore[misc]
+
+            # Ensure we have a valid file path string
+            if not isinstance(pcap_path, str):
+                raise ValueError(f"Expected file path string, got {type(pcap_path)}")
+
+            # Read the pcap data from the temporary file
+            with open(pcap_path, 'rb') as f:
+                pcap_data = f.read()
+
+            # Write to output file
+            with open(output_file_path, 'wb') as f:
+                bytes_written = f.write(pcap_data)
+
+            return bytes_written
+
+    @mcp.tool
+    async def start_enhanced_network_monitor(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        port_ranges: Annotated[list[str] | None, Field(description="Port ranges to monitor (e.g., ['80-443', '8000-9000'])")] = None,
+        src_ports: Annotated[list[str] | None, Field(description="Source ports to monitor")] = None,
+        dst_ports: Annotated[list[str] | None, Field(description="Destination ports to monitor")] = None,
+        ports: Annotated[list[str] | None, Field(description="Ports to monitor (both source and destination)")] = None,
+        protocols: Annotated[list[str] | None, Field(description="Protocols to monitor (e.g., ['tcp', 'udp'])")] = None,
+        processes: Annotated[list[str] | None, Field(description="Process names to monitor")] = None
+    ) -> None:
+        """
+        Start Enhanced Network Monitor on an instance.
+
+        WARNING: This feature only works with jailbroken devices.
+
+        Starts packet capture with optional filtering by ports, protocols, and processes.
+        """
+        netdump_filter = None
+        if any([port_ranges, src_ports, dst_ports, ports, protocols, processes]):
+            filter_dict: dict[str, Any] = {}
+            if port_ranges is not None:
+                filter_dict['port_ranges'] = port_ranges
+            if src_ports is not None:
+                filter_dict['src_ports'] = src_ports
+            if dst_ports is not None:
+                filter_dict['dst_ports'] = dst_ports
+            if ports is not None:
+                filter_dict['ports'] = ports
+            if protocols is not None:
+                filter_dict['protocols'] = protocols
+            if processes is not None:
+                filter_dict['processes'] = processes
+
+            netdump_filter = corellium_api.NetdumpFilter(**filter_dict)
+
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_start_netdump(instance_id, netdump_filter=netdump_filter)  # type: ignore[misc]
+
+    @mcp.tool
+    async def stop_enhanced_network_monitor(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")]
+    ) -> None:
+        """
+        Stop Enhanced Network Monitor on an instance.
+
+        WARNING: This feature only works with jailbroken devices.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_stop_netdump(instance_id)  # type: ignore[misc]
+
+    @mcp.tool
+    async def start_network_monitor(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        truncate_pcap: Annotated[bool | None, Field(description="Whether to truncate the pcap file (default: False)")] = None
+    ) -> None:
+        """
+        Start Network Monitor on an instance.
+
+        Starts SSL/TLS traffic interception and packet capture.
+        """
+        sslsplit_filter = None
+        if truncate_pcap is not None:
+            sslsplit_filter = corellium_api.SslsplitFilter(truncate_pcap=truncate_pcap)
+
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_start_network_monitor(instance_id, sslsplit_filter=sslsplit_filter)  # type: ignore[misc]
+
+    @mcp.tool
+    async def stop_network_monitor(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")]
+    ) -> None:
+        """
+        Stop Network Monitor on an instance.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_stop_network_monitor(instance_id)  # type: ignore[misc]
+
     return mcp
 
 

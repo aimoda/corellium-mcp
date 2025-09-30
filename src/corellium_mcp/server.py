@@ -287,18 +287,26 @@ def create_server() -> FastMCP:
 
     @mcp.tool
     async def get_instance_console_log(
-        instance_id: Annotated[str, Field(description="Instance ID (UUID) to get console log for")]
-    ) -> str:
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to get console log for")],
+        filepath: Annotated[str, Field(description="File path to write the console log to")]
+    ) -> int:
         """
-        Get the console log for a Corellium device instance.
-        Returns the current console log output as a string.
+        Get the console log for a Corellium device instance and write it to a file.
+        Returns the number of bytes written to the file.
         """
         async with corellium_api.ApiClient(configuration) as api_client:
             api = corellium_api.CorelliumApi(api_client)
             console_log = await api.v1_get_instance_console_log(instance_id)  # type: ignore[misc]
 
-            # API returns str according to docs
-            return str(console_log) if console_log else ""
+            # Convert to string and encode to bytes
+            log_content = str(console_log) if console_log else ""
+            log_bytes = log_content.encode('utf-8')
+
+            # Write to file
+            with open(filepath, 'wb') as f:
+                bytes_written = f.write(log_bytes)
+
+            return bytes_written
 
     return mcp
 

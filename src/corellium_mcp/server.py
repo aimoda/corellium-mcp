@@ -257,6 +257,34 @@ def create_server() -> FastMCP:
 
             return {"success": True, "instance_id": instance_id, "message": "Hooks cleared successfully"}
 
+    @mcp.tool
+    async def get_instance_services_ip(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to get services IP for")]
+    ) -> str:
+        """
+        Get the services IP address for a Corellium device instance.
+        The services IP is used to access device services like SSH, HTTP, etc.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            instance = await api.v1_get_instance(instance_id)  # type: ignore[misc]
+
+            return getattr(instance, 'service_ip', None) or ""
+
+    @mcp.tool
+    async def get_device_ip(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to get IP for")]
+    ) -> str:
+        """
+        Get the device IP address for a Corellium instance.
+        Returns just the IP address string.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            instance = await api.v1_get_instance(instance_id)  # type: ignore[misc]
+
+            return getattr(instance, 'wifi_ip', None) or ""
+
     return mcp
 
 

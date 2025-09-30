@@ -332,16 +332,44 @@ def create_server() -> FastMCP:
 
     @mcp.tool
     async def delete_instance(
-        instance_id: Annotated[str, Field(description="Instance ID (UUID) to delete")]
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) to delete")],
+        ctx: Context | None = None
     ) -> None:
         """
         Delete a Corellium device instance.
 
         This permanently removes the instance.
         """
+        nonlocal current_device_ids, active_port_forwards
+
         async with corellium_api.ApiClient(configuration) as api_client:
             api = corellium_api.CorelliumApi(api_client)
             await api.v1_delete_instance(instance_id)  # type: ignore[misc]
+
+        # Clean up any port forwards for this instance
+        port_forwards_to_remove = [key for key in active_port_forwards.keys() if key[0] == instance_id]
+        for forward_key in port_forwards_to_remove:
+            transport, _, _ = active_port_forwards[forward_key]
+            try:
+                transport.close()
+            except Exception as e:
+                print(f"Error closing SSH transport: {e}")
+            del active_port_forwards[forward_key]
+
+        # Remove from device tracking
+        current_device_ids.discard(instance_id)
+
+        # Remove device resource
+        device_resource_uri = f"device://{instance_id}"
+        mcp._resource_manager._resources.pop(device_resource_uri, None)
+
+        # Refresh port forward resources if any were removed
+        if port_forwards_to_remove:
+            await refresh_port_forward_resources(mcp)
+
+        # Notify clients of changes
+        if ctx:
+            await ctx.send_resource_list_changed()
 
     @mcp.tool
     async def start_instance(

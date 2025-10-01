@@ -557,7 +557,7 @@ def create_server() -> FastMCP:
     ) -> int:
         """
         Download a kernel binary for a specific iOS device model and version.
-        This tool is only available for iOS devices.
+        This tool is only available for iOS devices that are in the running (and fully booted) state.
         Returns the number of bytes written to the file.
         """
         async with corellium_api.ApiClient(configuration) as api_client:

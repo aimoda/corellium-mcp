@@ -83,8 +83,8 @@ def create_server() -> FastMCP:
     # SSH key for port forwarding (generated at startup)
     ssh_key: paramiko.RSAKey | None = None
 
-    # Track active port forwards: (instance_id, local_port) -> (transport, server_thread, cancel_scope)
-    active_port_forwards: dict[tuple[str, int], tuple[paramiko.Transport, threading.Thread, Any]] = {}
+    # Track active port forwards: (instance_id, local_port) -> (transport, server_thread, server)
+    active_port_forwards: dict[tuple[str, int], tuple[paramiko.Transport, threading.Thread, ForwardServer]] = {}
 
     async def refresh_device_resources(mcp: FastMCP) -> None:
         """Fetch devices from Corellium and create/update resources."""
@@ -162,7 +162,7 @@ def create_server() -> FastMCP:
 
             dead_forwards: list[tuple[str, int]] = []
 
-            for forward_key, (transport, server_thread, _) in list(active_port_forwards.items()):
+            for forward_key, (transport, _, server) in list(active_port_forwards.items()):
                 # Check if transport is still active
                 if not transport.is_active():
                     dead_forwards.append(forward_key)
@@ -172,8 +172,13 @@ def create_server() -> FastMCP:
                 instance_id, local_port = forward_key
                 print(f"Port forward disconnected: {instance_id} on port {local_port}")
 
-                # Remove from tracking
+                # Remove from tracking and shutdown server
                 if forward_key in active_port_forwards:
+                    _, _, server = active_port_forwards[forward_key]
+                    try:
+                        server.shutdown()
+                    except Exception as e:
+                        print(f"Error shutting down ForwardServer: {e}")
                     del active_port_forwards[forward_key]
 
             # Refresh resources and notify client if any were removed
@@ -349,7 +354,11 @@ def create_server() -> FastMCP:
         # Clean up any port forwards for this instance
         port_forwards_to_remove = [key for key in active_port_forwards.keys() if key[0] == instance_id]
         for forward_key in port_forwards_to_remove:
-            transport, _, _ = active_port_forwards[forward_key]
+            transport, _, server = active_port_forwards[forward_key]
+            try:
+                server.shutdown()
+            except Exception as e:
+                print(f"Error shutting down ForwardServer: {e}")
             try:
                 transport.close()
             except Exception as e:
@@ -877,14 +886,15 @@ def create_server() -> FastMCP:
                     print(f"Warning: Failed to remove SSH key: {e}")
 
                 # Create the forwarding server in a background thread
-                def run_forward_server():
-                    class SubHandler(Handler):
-                        chain_host = service_ip
-                        chain_port = 4000
-                        ssh_transport = transport
+                class SubHandler(Handler):
+                    chain_host = service_ip
+                    chain_port = 4000
+                    ssh_transport = transport
 
+                server = ForwardServer(("127.0.0.1", local_port), SubHandler)
+
+                def run_forward_server():
                     try:
-                        server = ForwardServer(("127.0.0.1", local_port), SubHandler)
                         server.serve_forever()
                     except Exception as e:
                         print(f"Port forwarding server error: {e}")
@@ -894,7 +904,7 @@ def create_server() -> FastMCP:
                 server_thread.start()
 
                 # Store connection info
-                active_port_forwards[forward_key] = (transport, server_thread, None)
+                active_port_forwards[forward_key] = (transport, server_thread, server)
 
                 # Add resource and notify client
                 await refresh_port_forward_resources(mcp)
@@ -929,17 +939,19 @@ def create_server() -> FastMCP:
         if forward_key not in active_port_forwards:
             return f"No active port forwarding found for instance {instance_id} on port {local_port}"
 
-        transport, server_thread, _ = active_port_forwards[forward_key]
+        transport, _, server = active_port_forwards[forward_key]
+
+        # Shutdown the ForwardServer first
+        try:
+            server.shutdown()
+        except Exception as e:
+            print(f"Error shutting down ForwardServer: {e}")
 
         # Close the SSH transport
         try:
             transport.close()
         except Exception as e:
             print(f"Error closing SSH transport: {e}")
-
-        # Note: The server thread will exit when connections are closed
-        # We can't directly stop ThreadingTCPServer.serve_forever() from here,
-        # but closing the transport will cause new connections to fail
 
         # Remove from tracking
         del active_port_forwards[forward_key]

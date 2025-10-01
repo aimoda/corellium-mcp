@@ -245,12 +245,14 @@ def create_server() -> FastMCP:
 
     @mcp.tool
     async def get_model_software(
-        model: Annotated[str, Field(description="Device model identifier", examples=["iPhone8,1", "iPhone14,2"])]
-    ) -> list[dict]:
+        model: Annotated[str, Field(description="Device model identifier", examples=["iPhone8,1", "iPhone14,2"])],
+        limit: Annotated[int, Field(ge=1, le=100, description="Number of firmware versions to return (default: 20)")] = 20,
+        offset: Annotated[int, Field(ge=0, description="Number of firmware versions to skip (default: 0)")] = 0
+    ) -> dict:
         """
         Get available firmware/software versions for a specific device model.
 
-        Returns a list of available firmware versions with details including version,
+        Returns paginated firmware versions with details including version,
         build ID, checksums, size, and download URLs.
         """
         async with corellium_api.ApiClient(configuration) as api_client:
@@ -272,7 +274,19 @@ def create_server() -> FastMCP:
 
             # Parse JSON response
             firmwares_data = json.loads(response.data.decode('utf-8'))  # type: ignore[attr-defined]
-            return firmwares_data if isinstance(firmwares_data, list) else []
+            all_firmwares = firmwares_data if isinstance(firmwares_data, list) else []
+
+            # Apply pagination
+            total = len(all_firmwares)
+            paginated_firmwares = all_firmwares[offset:offset + limit]
+
+            return {
+                "firmwares": paginated_firmwares,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + limit < total
+            }
 
     @mcp.tool
     async def create_instance(

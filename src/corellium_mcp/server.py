@@ -63,6 +63,7 @@ def create_server() -> FastMCP:
         raise ValueError("CORELLIUM_API_TOKEN environment variable is required")
 
     corellium_api_host = os.getenv("CORELLIUM_API_HOST", "https://app.corellium.com/api")
+    corellium_project_id = os.getenv("CORELLIUM_PROJECT_ID")
 
     configuration = corellium_api.Configuration(
         host=corellium_api_host
@@ -300,7 +301,8 @@ def create_server() -> FastMCP:
         """
         Create a new Corellium device instance.
 
-        If project_id is not provided, the default project will be used automatically.
+        If project_id is not provided, the CORELLIUM_PROJECT_ID environment variable
+        will be used. If that is not set, the first available project will be used automatically.
         The jailbroken flag determines the patches applied:
         - jailbroken=True: applies ["jailbroken"] patches
         - jailbroken=False: applies ["corelliumd"] patches
@@ -310,12 +312,17 @@ def create_server() -> FastMCP:
 
             # Get project_id if not provided
             if project_id is None:
-                projects = await api.v1_get_projects()  # type: ignore[misc]
-                if not projects or len(projects) == 0:  # type: ignore[arg-type]
-                    raise ValueError("No projects found. Please provide a project_id.")
-                project_id = getattr(projects[0], 'id', None)  # type: ignore[index]
-                if not project_id:
-                    raise ValueError("Could not determine default project ID.")
+                # Check environment variable first
+                if corellium_project_id:
+                    project_id = corellium_project_id
+                else:
+                    # Fall back to fetching all projects and using the first one
+                    projects = await api.v1_get_projects()  # type: ignore[misc]
+                    if not projects or len(projects) == 0:  # type: ignore[arg-type]
+                        raise ValueError("No projects found. Please provide a project_id.")
+                    project_id = getattr(projects[0], 'id', None)  # type: ignore[index]
+                    if not project_id:
+                        raise ValueError("Could not determine default project ID.")
 
             # Set patches based on jailbroken flag
             patches = ["jailbroken"] if jailbroken else ["corelliumd"]

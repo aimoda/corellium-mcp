@@ -1240,6 +1240,95 @@ def create_server() -> FastMCP:
             api = corellium_api.CorelliumApi(api_client)
             await api.v1_stop_network_monitor(instance_id)  # type: ignore[misc]
 
+    @mcp.tool
+    async def create_snapshot(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        name: Annotated[str, Field(description="Snapshot name")]
+    ) -> dict:
+        """
+        Create a snapshot of a Corellium device instance.
+
+        Creates a snapshot with the specified name and returns the snapshot details.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+
+            # Create snapshot options
+            snapshot_options = corellium_api.SnapshotCreationOptions(name=name)
+
+            # Create the snapshot
+            snapshot = await api.v1_create_snapshot(instance_id, snapshot_options)  # type: ignore[misc]
+
+            # Return snapshot details as dict
+            return {
+                "id": getattr(snapshot, 'id', None),
+                "name": getattr(snapshot, 'name', None),
+                "instance": getattr(snapshot, 'instance', None),
+                "status": str(getattr(snapshot, 'status', None)),
+                "date": getattr(snapshot, 'date', None),
+                "fresh": getattr(snapshot, 'fresh', None),
+                "live": getattr(snapshot, 'live', None),
+                "local": getattr(snapshot, 'local', None),
+                "model": getattr(snapshot, 'model', None)
+            }
+
+    @mcp.tool
+    async def restore_instance_snapshot(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        snapshot_id: Annotated[str, Field(description="Snapshot ID (UUID) to restore")]
+    ) -> None:
+        """
+        Restore a Corellium device instance from a snapshot.
+
+        This operation restores the instance to the state captured in the specified snapshot.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_restore_instance_snapshot(instance_id, snapshot_id)  # type: ignore[misc]
+
+    @mcp.tool
+    async def get_instance_snapshots(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")]
+    ) -> list[dict]:
+        """
+        Get all snapshots for a Corellium device instance.
+
+        Returns a list of snapshots with their details (id, name, status, date, etc.).
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            snapshots = await api.v1_get_instance_snapshots(instance_id)  # type: ignore[misc]
+
+            # Convert snapshots to list of dicts
+            return [
+                {
+                    "id": getattr(snapshot, 'id', None),
+                    "name": getattr(snapshot, 'name', None),
+                    "instance": getattr(snapshot, 'instance', None),
+                    "status": str(getattr(snapshot, 'status', None)),
+                    "date": getattr(snapshot, 'date', None),
+                    "fresh": getattr(snapshot, 'fresh', None),
+                    "live": getattr(snapshot, 'live', None),
+                    "local": getattr(snapshot, 'local', None),
+                    "model": getattr(snapshot, 'model', None)
+                }
+                for snapshot in snapshots  # type: ignore[union-attr]
+            ]
+
+    @mcp.tool
+    async def delete_instance_snapshot(
+        instance_id: Annotated[str, Field(description="Instance ID (UUID) of the device")],
+        snapshot_id: Annotated[str, Field(description="Snapshot ID (UUID) to delete")]
+    ) -> None:
+        """
+        Delete a snapshot of a Corellium device instance.
+
+        This permanently removes the specified snapshot.
+        """
+        async with corellium_api.ApiClient(configuration) as api_client:
+            api = corellium_api.CorelliumApi(api_client)
+            await api.v1_delete_instance_snapshot(instance_id, snapshot_id)  # type: ignore[misc]
+
     return mcp
 
 

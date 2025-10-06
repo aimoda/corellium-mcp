@@ -841,6 +841,9 @@ def create_server() -> FastMCP:
         This allows connecting a debugger to 127.0.0.1:{local_port} which tunnels
         through SSH to the device's services IP on port 4000.
 
+        IMPORTANT: Always use this tool instead of manually setting up port forwarding with SSH.
+        This tool handles all the SSH authentication and connection management automatically.
+
         IMPORTANT: Before using this tool, you must FIRST download the kernel binary using
         download_kernel_binary. After starting port forwarding, you can then use lldb tools
         to connect to 127.0.0.1:{local_port} for kernel debugging.

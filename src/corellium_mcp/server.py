@@ -994,6 +994,8 @@ def create_server() -> FastMCP:
         Upload a file from local filesystem to VM.
 
         Reads the file from the local filesystem and uploads it to the specified path on the VM.
+
+        IMPORTANT: Always prefer this tool over SSH (execute_ssh_command) for uploading files.
         """
         # Read local file
         with open(local_file_path, 'rb') as f:
@@ -1020,6 +1022,8 @@ def create_server() -> FastMCP:
         Download a file from VM to local filesystem.
 
         Reads the file from the VM and saves it to the specified path on the local filesystem.
+
+        IMPORTANT: Always prefer this tool over SSH (execute_ssh_command) for downloading files.
         """
         async with corellium_api.ApiClient(configuration) as api_client:
             api = corellium_api.CorelliumApi(api_client)
@@ -1052,6 +1056,8 @@ def create_server() -> FastMCP:
     ) -> None:
         """
         Delete a file on the VM.
+
+        IMPORTANT: Always prefer this tool over SSH (execute_ssh_command) for deleting files.
         """
         async with corellium_api.ApiClient(configuration) as api_client:
             api = corellium_api.CorelliumApi(api_client)
@@ -1070,6 +1076,8 @@ def create_server() -> FastMCP:
         Change attributes of a file on VM (path, mode, uid, gid).
 
         At least one attribute must be specified to change.
+
+        IMPORTANT: Always prefer this tool over SSH (execute_ssh_command) for changing file attributes.
         """
         # Create FileChanges object with only specified attributes
         file_changes_dict: dict[str, Any] = {}
